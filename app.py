@@ -252,32 +252,56 @@ def wfsearch():
         cookie_header = "; ".join(cookies_to_fwd)
         diag["cookies"] = cookie_header[:120]
 
-        # 2) POST AJAX -> data.find.php (misma session_number = misma IP)
+        # 2) POST AJAX -> data.find.php
+        # Replica EXACTA del request de Chrome capturado con DevTools:
+        # - Sin www en el host
+        # - multipart/form-data (NO urlencoded)
+        # - Campos: token, cidr=0, c=0, q, l, pg  (NO _ACTION!)
+        # - SIN X-Requested-With
+        # - Referer: home (NO /buscar/<q>)
+        # - Accept: */*
         diag["phase"] = "ajax"
-        ajax_url = base.replace("www.", "") + "/mvc/controllers/data.find.php"
-        form = {
-            "_ACTION": "buscar",
-            "token":   token,
-            "q":       q,
-            "l":       limit,
-            "pg":      pg,
-        }
+        ajax_url = "https://wolfmax4k.com/mvc/controllers/data.find.php"
+        # Construir multipart/form-data manualmente con boundary tipo Chrome
+        boundary = "----WebKitFormBoundaryyMTCxsxFHq3bxBSN"
+        crlf = "\r\n"
+        parts = []
+        for name, value in [
+            ("token", token),
+            ("cidr",  "0"),
+            ("c",     "0"),
+            ("q",     q),
+            ("l",     limit),
+            ("pg",    pg),
+        ]:
+            parts.append(f"--{boundary}{crlf}"
+                         f"Content-Disposition: form-data; name=\"{name}\"{crlf}{crlf}"
+                         f"{value}{crlf}")
+        parts.append(f"--{boundary}--{crlf}")
+        body = "".join(parts).encode("utf-8")
         ajax_headers = {
-            "X-Requested-With": "XMLHttpRequest",
-            "Origin":  base,
-            "Referer": shell_url,
-            "Accept":  "application/json, text/javascript, */*; q=0.01",
-            "Content-Type":
-                "application/x-www-form-urlencoded; charset=UTF-8",
-            "User-Agent": BROWSER_HEADERS["User-Agent"],
+            "Accept":            "*/*",
+            "Accept-Language":   "es-ES,es;q=0.9",
+            "Origin":            "https://www.wolfmax4k.com",
+            "Referer":           "https://www.wolfmax4k.com/",
+            "Content-Type":      f"multipart/form-data; boundary={boundary}",
+            "Sec-Fetch-Dest":    "empty",
+            "Sec-Fetch-Mode":    "cors",
+            "Sec-Fetch-Site":    "same-site",
+            "User-Agent":        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                                 "AppleWebKit/537.36 (KHTML, like Gecko) "
+                                 "Chrome/147.0.0.0 Safari/537.36",
         }
         if cookie_header:
             ajax_headers["Cookie"] = cookie_header
-        r1 = _wolf_post(
-            session_number, ajax_url, data=form,
-            headers=ajax_headers,
-            timeout=70,
-        )
+        # POST con body raw (no data=dict, para mantener el body multipart exacto)
+        if SCRAPERAPI_KEY:
+            wrapped = _scraperapi_url(ajax_url, session_number=session_number)
+            r1 = requests.post(wrapped, data=body, headers=ajax_headers,
+                               timeout=70)
+        else:
+            cs = _make_scraper()
+            r1 = cs.post(ajax_url, data=body, headers=ajax_headers, timeout=70)
         diag["ajax_status"] = r1.status_code
         diag["ajax_bytes"] = len(r1.content)
         diag["ajax_text_sample"] = (r1.text or "")[:200]
