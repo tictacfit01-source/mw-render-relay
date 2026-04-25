@@ -237,6 +237,21 @@ def wfsearch():
                             "_diag": diag,
                             "_html_sample": text[:400]}), 502
 
+        # Capturar PHPSESSID y cualquier cookie del shell. Los pasamos
+        # explicitamente al POST porque ScraperAPI puede no propagar
+        # cookies entre requests al mismo session_number.
+        cookies_to_fwd = []
+        for c in r0.cookies:
+            cookies_to_fwd.append(f"{c.name}={c.value}")
+        # ScraperAPI tambien puede devolver Set-Cookie en headers raw
+        sc_header = r0.headers.get("Set-Cookie") or ""
+        for piece in sc_header.split(","):
+            mm = re.match(r"^\s*([^=;\s]+)=([^;]*)", piece)
+            if mm and mm.group(1) not in [c.split("=")[0] for c in cookies_to_fwd]:
+                cookies_to_fwd.append(f"{mm.group(1)}={mm.group(2)}")
+        cookie_header = "; ".join(cookies_to_fwd)
+        diag["cookies"] = cookie_header[:120]
+
         # 2) POST AJAX -> data.find.php (misma session_number = misma IP)
         diag["phase"] = "ajax"
         ajax_url = base.replace("www.", "") + "/mvc/controllers/data.find.php"
@@ -247,21 +262,25 @@ def wfsearch():
             "l":       limit,
             "pg":      pg,
         }
+        ajax_headers = {
+            "X-Requested-With": "XMLHttpRequest",
+            "Origin":  base,
+            "Referer": shell_url,
+            "Accept":  "application/json, text/javascript, */*; q=0.01",
+            "Content-Type":
+                "application/x-www-form-urlencoded; charset=UTF-8",
+            "User-Agent": BROWSER_HEADERS["User-Agent"],
+        }
+        if cookie_header:
+            ajax_headers["Cookie"] = cookie_header
         r1 = _wolf_post(
             session_number, ajax_url, data=form,
-            headers={
-                "X-Requested-With": "XMLHttpRequest",
-                "Origin":  base,
-                "Referer": shell_url,
-                "Accept":  "application/json, text/javascript, */*; q=0.01",
-                "Content-Type":
-                    "application/x-www-form-urlencoded; charset=UTF-8",
-                "User-Agent": BROWSER_HEADERS["User-Agent"],
-            },
+            headers=ajax_headers,
             timeout=70,
         )
         diag["ajax_status"] = r1.status_code
         diag["ajax_bytes"] = len(r1.content)
+        diag["ajax_text_sample"] = (r1.text or "")[:200]
         try:
             data = r1.json()
         except Exception:
