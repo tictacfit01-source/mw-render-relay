@@ -35,12 +35,18 @@ SCRAPERAPI_BASE = "http://api.scraperapi.com"
 
 
 def _scraperapi_url(target_url, session_number=None, post=False):
-    """Construye URL de ScraperAPI envolviendo target_url."""
+    """Construye URL de ScraperAPI envolviendo target_url.
+
+    `premium=true` -> usa el pool de IPs residenciales premium, necesario
+    para dominios protegidos como wolfmax4k. Consume 25 creditos/request
+    (vs 1 normal). Plan free 1000 creditos = ~40 requests/dia.
+    """
     params = {
         "api_key":      SCRAPERAPI_KEY,
         "url":          target_url,
         "keep_headers": "true",
-        "country_code": "es",  # geo-target Spain (wolf es ES)
+        "country_code": "es",
+        "premium":      "true",
     }
     if session_number is not None:
         params["session_number"] = str(session_number)
