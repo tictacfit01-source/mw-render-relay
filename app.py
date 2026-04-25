@@ -42,14 +42,14 @@ def _scraperapi_url(target_url, session_number=None, post=False):
     (vs 1 normal). Plan free 1000 creditos = ~40 requests/dia.
     """
     params = {
-        "api_key":       SCRAPERAPI_KEY,
-        "url":           target_url,
-        "keep_headers":  "true",
-        "country_code":  "es",
-        # ultra_premium usa pool con sticky-IP fiable (necesario para
-        # data.find.php que ata el token a la IP que lo emitio).
-        # 75 creditos/request -> ~30 busquedas/mes con plan free 5000.
-        "ultra_premium": "true",
+        "api_key":      SCRAPERAPI_KEY,
+        "url":          target_url,
+        "keep_headers": "true",
+        "country_code": "es",
+        # premium=true respeta nuestros headers (Referer, etc.) y rota
+        # IPs residenciales. ultra_premium=true usa navegador real que
+        # sobrescribe Referer -> server rechaza con "No Referrer".
+        "premium":      "true",
     }
     if session_number is not None:
         params["session_number"] = str(session_number)
@@ -305,8 +305,9 @@ def wfsearch():
                                  "AppleWebKit/537.36 (KHTML, like Gecko) "
                                  "Chrome/147.0.0.0 Safari/537.36",
         }
-        if cookie_header:
-            ajax_headers["Cookie"] = cookie_header
+        # NOTA: Chrome NO envia Cookie en su POST a data.find.php (verificado
+        # via DevTools). Si la enviamos podemos romper la validacion del token.
+        # Asi que omitimos cookie_header aqui aunque la tengamos.
         # POST con body raw (no data=dict, para mantener el body multipart exacto)
         if SCRAPERAPI_KEY:
             wrapped = _scraperapi_url(ajax_url, session_number=session_number)
