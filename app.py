@@ -298,6 +298,12 @@ def wfsearch():
             "Origin":            "https://www.wolfmax4k.com",
             "Referer":           "https://www.wolfmax4k.com/",
             "Content-Type":      f"multipart/form-data; boundary={boundary}",
+            "Priority":          "u=1, i",
+            "Sec-Ch-Ua":
+                '"Google Chrome";v="147", "Not.A/Brand";v="8", '
+                '"Chromium";v="147"',
+            "Sec-Ch-Ua-Mobile":   "?0",
+            "Sec-Ch-Ua-Platform": '"Windows"',
             "Sec-Fetch-Dest":    "empty",
             "Sec-Fetch-Mode":    "cors",
             "Sec-Fetch-Site":    "same-site",
