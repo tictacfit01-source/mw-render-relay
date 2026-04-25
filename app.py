@@ -15,9 +15,19 @@ Endpoints:
 import os
 import re
 import requests
+import cloudscraper
 from flask import Flask, request, Response, jsonify
 
 app = Flask(__name__)
+
+
+def _make_scraper():
+    """Devuelve un scraper cloudscraper que emula Chrome y resuelve los
+    challenges JavaScript de Cloudflare de forma transparente. Lo usamos
+    para wolfmax4k que mete Under Attack Mode contra IPs de datacenter."""
+    return cloudscraper.create_scraper(
+        browser={"browser": "chrome", "platform": "windows", "mobile": False}
+    )
 
 ALLOWED_HOSTS = (
     "mejortorrent",
@@ -111,15 +121,19 @@ def relay():
 
     body = request.get_data() if request.method not in ("GET", "HEAD") else None
     try:
-        r = requests.request(
-            request.method,
-            target,
-            headers=fwd,
-            data=body,
-            timeout=25,
-            allow_redirects=True,
-            stream=False,
-        )
+        # Para wolfmax usamos cloudscraper (resuelve CF challenges).
+        # Para el resto, requests normal.
+        if "wolfmax4k" in target.lower():
+            cs = _make_scraper()
+            r = cs.request(
+                request.method, target, headers=fwd, data=body,
+                timeout=25, allow_redirects=True,
+            )
+        else:
+            r = requests.request(
+                request.method, target, headers=fwd, data=body,
+                timeout=25, allow_redirects=True, stream=False,
+            )
     except Exception as e:
         return Response(
             "relay error: " + e.__class__.__name__ + ": " + str(e),
@@ -162,7 +176,7 @@ def wfsearch():
     raw_mode = request.args.get("raw") == "1"
 
     base = "https://www.wolfmax4k.com"
-    sess = requests.Session()
+    sess = _make_scraper()
     sess.headers.update(BROWSER_HEADERS)
     diag = {"phase": "init"}
 
