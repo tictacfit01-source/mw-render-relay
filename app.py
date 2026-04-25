@@ -42,11 +42,14 @@ def _scraperapi_url(target_url, session_number=None, post=False):
     (vs 1 normal). Plan free 1000 creditos = ~40 requests/dia.
     """
     params = {
-        "api_key":      SCRAPERAPI_KEY,
-        "url":          target_url,
-        "keep_headers": "true",
-        "country_code": "es",
-        "premium":      "true",
+        "api_key":       SCRAPERAPI_KEY,
+        "url":           target_url,
+        "keep_headers":  "true",
+        "country_code":  "es",
+        # ultra_premium usa pool con sticky-IP fiable (necesario para
+        # data.find.php que ata el token a la IP que lo emitio).
+        # 75 creditos/request -> ~30 busquedas/mes con plan free 5000.
+        "ultra_premium": "true",
     }
     if session_number is not None:
         params["session_number"] = str(session_number)
@@ -225,10 +228,14 @@ def wfsearch():
     session_number = int(hashlib.sha1(q.encode()).hexdigest()[:8], 16) % 1000
 
     try:
-        # 1) GET pagina /buscar/<q> para harvest token + cookie
+        # 1) GET HOMEPAGE para harvest token + cookie.
+        # IMPORTANTE: Chrome envia Referer "/" (home), no /buscar/<q>.
+        # El token CSRF que valida data.find.php proviene del form ffind
+        # de la HOME, no del de la pagina de busqueda. Usar la URL
+        # equivocada hace que el server rechaze con "Denied".
         diag["phase"] = "shell"
         diag["session_number"] = session_number
-        shell_url = f"{base}/buscar/{urlquote(q, safe='')}"
+        shell_url = base + "/"
         r0 = _wolf_get(session_number, shell_url,
                        headers={**BROWSER_HEADERS}, timeout=70)
         diag["shell_status"] = r0.status_code
