@@ -2,32 +2,76 @@
 MejorWolf Render relay.
 
 Mismas funciones que el Cloudflare Worker /?u= y /wfsearch, pero corriendo
-en infraestructura NO-Cloudflare (IPs residenciales-ish desde el datacenter
-de Render). Esto evita el bloqueo de wolfmax4k contra IPs CF que rompe el
-endpoint AJAX /mvc/controllers/data.find.php.
+en infraestructura NO-Cloudflare. Como Wolf banea por IP los rangos de
+Cloudflare/Render/etc, opcionalmente enruta wolfmax via ScraperAPI (pool
+residencial rotante) cuando esta presente la variable SCRAPERAPI_KEY.
 
 Endpoints:
   GET /                     -> ping
-  GET /relay?u=<url>        -> proxy generico (igual que CF Worker /?u=)
-  GET /wfsearch?q=<query>   -> busqueda completa wolfmax (GET token + POST AJAX
-                                en una sola peticion, manteniendo cookie+sesion)
+  GET /relay?u=<url>        -> proxy generico
+  GET /wfsearch?q=<query>   -> busqueda completa wolfmax (GET shell + POST AJAX
+                                manteniendo sesion, via ScraperAPI si esta
+                                configurada).
 """
 import os
 import re
 import requests
 import cloudscraper
+from urllib.parse import urlencode, quote as urlquote
 from flask import Flask, request, Response, jsonify
 
 app = Flask(__name__)
 
+# === ScraperAPI (residential proxy bypass) =================================
+# Si esta presente esta env var, todas las peticiones a wolfmax4k pasan por
+# ScraperAPI que rota IPs residenciales. Wolf no puede banear porque cada
+# request sale por una IP distinta.
+SCRAPERAPI_KEY = os.environ.get("SCRAPERAPI_KEY", "").strip()
+
+# Sticky session — necesitamos GET shell + POST AJAX usando la MISMA
+# sesion (cookies+token comparten estado). ScraperAPI mantiene cookies
+# si pasamos session_number=N (mismo N en ambas requests).
+SCRAPERAPI_BASE = "http://api.scraperapi.com"
+
+
+def _scraperapi_url(target_url, session_number=None, post=False):
+    """Construye URL de ScraperAPI envolviendo target_url."""
+    params = {
+        "api_key":      SCRAPERAPI_KEY,
+        "url":          target_url,
+        "keep_headers": "true",
+        "country_code": "es",  # geo-target Spain (wolf es ES)
+    }
+    if session_number is not None:
+        params["session_number"] = str(session_number)
+    return SCRAPERAPI_BASE + "/?" + urlencode(params)
+
+
+def _wolf_get(session_number, url, headers=None, timeout=60):
+    """GET hacia wolfmax via ScraperAPI (si hay key) o cloudscraper."""
+    if SCRAPERAPI_KEY:
+        wrapped = _scraperapi_url(url, session_number=session_number)
+        return requests.get(wrapped, headers=headers or {}, timeout=timeout)
+    cs = _make_scraper()
+    return cs.get(url, headers=headers or {}, timeout=timeout)
+
+
+def _wolf_post(session_number, url, data=None, headers=None, timeout=60):
+    """POST hacia wolfmax via ScraperAPI (si hay key) o cloudscraper."""
+    if SCRAPERAPI_KEY:
+        wrapped = _scraperapi_url(url, session_number=session_number)
+        return requests.post(wrapped, data=data, headers=headers or {},
+                             timeout=timeout)
+    cs = _make_scraper()
+    return cs.post(url, data=data, headers=headers or {}, timeout=timeout)
+
 
 def _make_scraper():
-    """Devuelve un scraper cloudscraper que emula Chrome y resuelve los
-    challenges JavaScript de Cloudflare de forma transparente. Lo usamos
-    para wolfmax4k que mete Under Attack Mode contra IPs de datacenter."""
+    """Cloudscraper para flujos donde no haya ScraperAPI configurado."""
     return cloudscraper.create_scraper(
         browser={"browser": "chrome", "platform": "windows", "mobile": False}
     )
+
 
 ALLOWED_HOSTS = (
     "mejortorrent",
@@ -81,8 +125,7 @@ def host_allowed(target_url: str) -> bool:
     try:
         from urllib.parse import urlparse
         h = urlparse(target_url).hostname or ""
-        h = h.lower()
-        return any(d in h for d in ALLOWED_HOSTS)
+        return any(d in h.lower() for d in ALLOWED_HOSTS)
     except Exception:
         return False
 
@@ -90,7 +133,8 @@ def host_allowed(target_url: str) -> bool:
 @app.get("/")
 def root():
     return Response(
-        "MejorWolf Render relay OK. Endpoints: /relay?u=<url>, /wfsearch?q=<q>",
+        "MejorWolf Render relay OK. ScraperAPI=" +
+        ("ON" if SCRAPERAPI_KEY else "OFF"),
         mimetype="text/plain",
     )
 
@@ -120,25 +164,23 @@ def relay():
             fwd[canon] = v
 
     body = request.get_data() if request.method not in ("GET", "HEAD") else None
+    is_wolf = "wolfmax4k" in target.lower()
     try:
-        # Para wolfmax usamos cloudscraper (resuelve CF challenges).
-        # Para el resto, requests normal.
-        if "wolfmax4k" in target.lower():
+        if is_wolf and SCRAPERAPI_KEY:
+            wrapped = _scraperapi_url(target, session_number=None)
+            r = requests.request(request.method, wrapped, headers=fwd,
+                                 data=body, timeout=60, allow_redirects=True)
+        elif is_wolf:
             cs = _make_scraper()
-            r = cs.request(
-                request.method, target, headers=fwd, data=body,
-                timeout=25, allow_redirects=True,
-            )
+            r = cs.request(request.method, target, headers=fwd, data=body,
+                           timeout=25, allow_redirects=True)
         else:
-            r = requests.request(
-                request.method, target, headers=fwd, data=body,
-                timeout=25, allow_redirects=True, stream=False,
-            )
+            r = requests.request(request.method, target, headers=fwd,
+                                 data=body, timeout=25, allow_redirects=True,
+                                 stream=False)
     except Exception as e:
-        return Response(
-            "relay error: " + e.__class__.__name__ + ": " + str(e),
-            status=502,
-        )
+        return Response("relay error: " + e.__class__.__name__ + ": " + str(e),
+                        status=502)
 
     out_headers = {}
     for k, v in r.headers.items():
@@ -148,6 +190,7 @@ def relay():
     out_headers["Access-Control-Allow-Origin"] = "*"
     out_headers["X-MW-Render-Status"] = str(r.status_code)
     out_headers["X-MW-Render-Final"] = r.url
+    out_headers["X-MW-Via-Scraperapi"] = "1" if (is_wolf and SCRAPERAPI_KEY) else "0"
     return Response(r.content, status=r.status_code, headers=out_headers)
 
 
@@ -159,15 +202,8 @@ _TOKEN_RE = re.compile(
 @app.get("/wfsearch")
 def wfsearch():
     """Busqueda dedicada wolfmax: GET shell + POST data.find.php manteniendo
-    sesion en el mismo flujo Python. Devuelve el JSON crudo de data.find.php
-    o un wrapper con los items normalizados.
-
-    Parametros:
-      q  - query (obligatorio)
-      pg - pagina (default 1)
-      l  - limite (default 100)
-      raw=1 - devolver el JSON raw del backend en vez del wrapper normalizado
-    """
+    sesion via ScraperAPI session_number (cookies+token consistentes entre
+    ambas requests)."""
     q = (request.args.get("q") or "").strip()
     if not q:
         return Response("missing q", status=400)
@@ -176,15 +212,19 @@ def wfsearch():
     raw_mode = request.args.get("raw") == "1"
 
     base = "https://www.wolfmax4k.com"
-    sess = _make_scraper()
-    sess.headers.update(BROWSER_HEADERS)
-    diag = {"phase": "init"}
+    diag = {"phase": "init", "scraperapi": bool(SCRAPERAPI_KEY)}
+
+    # Sesion sticky por query — asi misma IP+cookies entre GET y POST
+    import hashlib
+    session_number = int(hashlib.sha1(q.encode()).hexdigest()[:8], 16) % 1000
 
     try:
         # 1) GET pagina /buscar/<q> para harvest token + cookie
         diag["phase"] = "shell"
-        shell_url = f"{base}/buscar/{requests.utils.quote(q, safe='')}"
-        r0 = sess.get(shell_url, timeout=20, allow_redirects=True)
+        diag["session_number"] = session_number
+        shell_url = f"{base}/buscar/{urlquote(q, safe='')}"
+        r0 = _wolf_get(session_number, shell_url,
+                       headers={**BROWSER_HEADERS}, timeout=70)
         diag["shell_status"] = r0.status_code
         diag["shell_bytes"] = len(r0.content)
         text = r0.text
@@ -192,10 +232,12 @@ def wfsearch():
         token = m.group(1) if m else ""
         diag["token"] = "ok" if token else "miss"
         if not token:
-            return jsonify({"response": False, "data": {"error": "no token"},
-                            "_diag": diag}), 502
+            return jsonify({"response": False,
+                            "data": {"error": "no token"},
+                            "_diag": diag,
+                            "_html_sample": text[:400]}), 502
 
-        # 2) POST AJAX -> data.find.php
+        # 2) POST AJAX -> data.find.php (misma session_number = misma IP)
         diag["phase"] = "ajax"
         ajax_url = base.replace("www.", "") + "/mvc/controllers/data.find.php"
         form = {
@@ -205,17 +247,18 @@ def wfsearch():
             "l":       limit,
             "pg":      pg,
         }
-        r1 = sess.post(
-            ajax_url,
-            data=form,
+        r1 = _wolf_post(
+            session_number, ajax_url, data=form,
             headers={
                 "X-Requested-With": "XMLHttpRequest",
                 "Origin":  base,
                 "Referer": shell_url,
                 "Accept":  "application/json, text/javascript, */*; q=0.01",
-                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                "Content-Type":
+                    "application/x-www-form-urlencoded; charset=UTF-8",
+                "User-Agent": BROWSER_HEADERS["User-Agent"],
             },
-            timeout=25,
+            timeout=70,
         )
         diag["ajax_status"] = r1.status_code
         diag["ajax_bytes"] = len(r1.content)
@@ -226,21 +269,19 @@ def wfsearch():
 
         if raw_mode:
             return Response(
-                r1.content,
-                status=r1.status_code,
-                mimetype=r1.headers.get("content-type",
-                                        "application/json"),
+                r1.content, status=r1.status_code,
+                mimetype=r1.headers.get("content-type", "application/json"),
                 headers={"Access-Control-Allow-Origin": "*",
                          "X-MW-Diag": str(diag)},
             )
 
         if not data or not data.get("response"):
-            return jsonify({"response": False, "data": data, "_diag": diag}), 200
+            return jsonify({"response": False, "data": data,
+                            "_diag": diag}), 200
 
         # Normalizar a items playables
         out = []
         datafinds = (data.get("data") or {}).get("datafinds") or {}
-        # datafinds es {"0": {"0": {guid,torrentName,calidad,image}, "1": ...}, "1": {...}}
         if isinstance(datafinds, list):
             buckets = datafinds
         else:
@@ -249,8 +290,8 @@ def wfsearch():
         for bucket in buckets:
             if not isinstance(bucket, dict):
                 continue
-            for k in sorted(bucket.keys(), key=lambda x: int(x)
-                            if str(x).isdigit() else 0):
+            for k in sorted(bucket.keys(),
+                            key=lambda x: int(x) if str(x).isdigit() else 0):
                 it = bucket[k]
                 if not isinstance(it, dict):
                     continue
@@ -270,7 +311,6 @@ def wfsearch():
             "response": True,
             "items":    out,
             "_diag":    diag,
-            "_raw":     None if not raw_mode else data,
         })
 
     except Exception as e:
